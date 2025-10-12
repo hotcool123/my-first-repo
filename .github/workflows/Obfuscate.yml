@@ -37,16 +37,9 @@ jobs:
           # 2) If not found, query GitHub releases for assets (using jq)
           if [ $found -eq 0 ]; then
             echo "Raw path not found on tried branches. Querying releases for assets with curl+jq..."
-            # get releases JSON
             releases_json=$(curl -s "https://api.github.com/repos/${REPO}/releases")
             if [ -n "$releases_json" ]; then
-              # use jq to find an asset URL whose name contains unobfus or worker (case-insensitive)
-              asset_url=$(echo "$releases_json" | jq -r '.[] .assets[]?.browser_download_url as $url | .[]? | .assets[]? | select((.name|ascii_downcase) | test("unobfus|worker")) | .browser_download_url' 2>/dev/null | head -n1 || true)
-              # fallback jq expression (safer)
-              if [ -z "$asset_url" ]; then
-                asset_url=$(echo "$releases_json" | jq -r '.[] | .assets[]? | select((.name|ascii_downcase) | test("unobfus|worker")) | .browser_download_url' 2>/dev/null | head -n1 || true)
-              fi
-
+              asset_url=$(echo "$releases_json" | jq -r '.[] | .assets[]? | select((.name|ascii_downcase) | test("unobfus|worker")) | .browser_download_url' 2>/dev/null | head -n1 || true)
               if [ -n "$asset_url" ]; then
                 echo "Found release asset URL: $asset_url"
                 if wget -q -O "$DEST" --tries=3 --timeout=30 "$asset_url"; then
@@ -75,7 +68,6 @@ jobs:
             for c in "${candidates[@]}"; do
               echo "Trying $c"
               if wget -q -O "$TMPDIR/tmp_asset" --tries=3 --timeout=30 "$c"; then
-                # if it's likely a JS, move it
                 filetype=$(file -b --mime-type "$TMPDIR/tmp_asset" || echo "")
                 if echo "$filetype" | grep -q "application/zip"; then
                   echo "Downloaded a zip, attempting to extract..."
@@ -94,7 +86,6 @@ jobs:
                     fi
                   fi
                 else
-                  # treat as direct js
                   mv "$TMPDIR/tmp_asset" "$DEST"
                   echo "Downloaded origin.js from $c"
                   found=1
@@ -176,7 +167,7 @@ jobs:
           git push origin main || echo "Nothing to push"
 
       - name: Upload obfuscated worker artifact
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: obfuscated-worker
           path: build/_worker.js
