@@ -2,111 +2,181 @@ name: Build Obfuscate BPB Panel
 
 on:
   push:
-    branches:
-      - main
-  schedule:
-    # Runs everyday at 1:00 AM
-    - cron: "0 1 * * *"
-
-permissions:
-  contents: write
+    branches: [main]
+  workflow_dispatch:
 
 jobs:
   build:
     runs-on: ubuntu-latest
-
     steps:
-      - name: Check out the code
-        uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v3
 
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: "latest"
-
-      - name: Install dependencies
-        run: |
-          npm install -g javascript-obfuscator
-
-      - name: Clone BPB workjs (robust)
+      - name: Prepare origin.js (auto-discover via jq)
         run: |
           set -euo pipefail
 
-          # 可能的 URL（优先 raw 文件路径）
-          raw_url="https://raw.githubusercontent.com/bia-pain-bache/BPB-Worker-Panel/main/build/unobfuscated-worker.js"
-          release_zip_url="https://github.com/bia-pain-bache/BPB-Worker-Panel/releases/latest/download/unobfuscated-worker.zip"
-          release_js_url="https://github.com/bia-pain-bache/BPB-Worker-Panel/releases/latest/download/unobfuscated-worker.js"
+          REPO="bia-pain-bache/BPB-Worker-Panel"
+          DEST="origin.js"
+          TMPDIR="bpb_tmp"
+          mkdir -p "$TMPDIR"
 
-          echo "Try raw URL: $raw_url"
-          if wget -O origin.js --tries=3 --timeout=30 "$raw_url"; then
-            echo "Downloaded origin.js from raw path"
-          else
-            echo "raw path failed, try release js asset..."
-            if wget -O origin.js --tries=3 --timeout=30 "$release_js_url"; then
-              echo "Downloaded origin.js from release js asset"
-            else
-              echo "release js asset not found, try release zip..."
-              if wget -O worker.zip --tries=3 --timeout=30 "$release_zip_url"; then
-                echo "Downloaded worker.zip, attempting to unzip..."
-                # 尝试解压并寻找 unobfuscated-worker.js
-                unzip -l worker.zip
-                if unzip -p worker.zip unobfuscated-worker.js > origin.js 2>/dev/null; then
-                  echo "Extracted unobfuscated-worker.js from zip to origin.js"
+          # 1) Try common branches raw path
+          branches=("main" "master" "develop" "dev" "release" "production")
+          found=0
+          for b in "${branches[@]}"; do
+            url="https://raw.githubusercontent.com/${REPO}/${b}/build/unobfuscated-worker.js"
+            echo "Trying raw URL: $url"
+            if wget -q -O "$DEST" --tries=3 --timeout=30 "$url"; then
+              echo "Downloaded origin.js from raw: $url"
+              found=1
+              break
+            fi
+          done
+
+          # 2) If not found, query GitHub releases for assets (using jq)
+          if [ $found -eq 0 ]; then
+            echo "Raw path not found on tried branches. Querying releases for assets with curl+jq..."
+            # get releases JSON
+            releases_json=$(curl -s "https://api.github.com/repos/${REPO}/releases")
+            if [ -n "$releases_json" ]; then
+              # use jq to find an asset URL whose name contains unobfus or worker (case-insensitive)
+              asset_url=$(echo "$releases_json" | jq -r '.[] .assets[]?.browser_download_url as $url | .[]? | .assets[]? | select((.name|ascii_downcase) | test("unobfus|worker")) | .browser_download_url' 2>/dev/null | head -n1 || true)
+              # fallback jq expression (safer)
+              if [ -z "$asset_url" ]; then
+                asset_url=$(echo "$releases_json" | jq -r '.[] | .assets[]? | select((.name|ascii_downcase) | test("unobfus|worker")) | .browser_download_url' 2>/dev/null | head -n1 || true)
+              fi
+
+              if [ -n "$asset_url" ]; then
+                echo "Found release asset URL: $asset_url"
+                if wget -q -O "$DEST" --tries=3 --timeout=30 "$asset_url"; then
+                  echo "Downloaded origin.js from release asset"
+                  found=1
                 else
-                  unzip worker.zip -d worker_unzip
-                  found=$(find worker_unzip -type f -name '*unobfuscated*' -print -quit || true)
-                  if [ -n "$found" ]; then
-                    echo "Found file in zip: $found"
-                    cp "$found" origin.js
-                  else
-                    echo "Failed to find unobfuscated-worker.js inside the release zip" >&2
-                    exit 1
-                  fi
+                  echo "Failed to download found asset URL: $asset_url"
                 fi
               else
-                echo "Release zip not found or download failed." >&2
-                echo "Attempting git clone fallback..."
-                git clone --depth 1 https://github.com/bia-pain-bache/BPB-Worker-Panel.git bpb-src || { echo "git clone failed"; exit 1; }
-                found=$(find bpb-src -type f -iname '*unobfuscated*' -print -quit || true)
-                if [ -n "$found" ]; then
-                  echo "Found file in repository at: $found"
-                  cp "$found" origin.js
+                echo "No suitable release asset found by keywords."
+              fi
+            else
+              echo "Failed to fetch releases JSON (maybe rate-limited)."
+            fi
+          fi
+
+          # 3) Try conventional releases/latest download URLs
+          if [ $found -eq 0 ]; then
+            echo "Trying conventional releases/latest download URLs..."
+            candidates=(
+              "https://github.com/${REPO}/releases/latest/download/unobfuscated-worker.js"
+              "https://github.com/${REPO}/releases/latest/download/unobfuscated-worker.zip"
+              "https://github.com/${REPO}/releases/latest/download/worker.js"
+              "https://github.com/${REPO}/releases/latest/download/worker.zip"
+            )
+            for c in "${candidates[@]}"; do
+              echo "Trying $c"
+              if wget -q -O "$TMPDIR/tmp_asset" --tries=3 --timeout=30 "$c"; then
+                # if it's likely a JS, move it
+                filetype=$(file -b --mime-type "$TMPDIR/tmp_asset" || echo "")
+                if echo "$filetype" | grep -q "application/zip"; then
+                  echo "Downloaded a zip, attempting to extract..."
+                  if unzip -p "$TMPDIR/tmp_asset" unobfuscated-worker.js > "$DEST" 2>/dev/null; then
+                    echo "Extracted unobfuscated-worker.js from zip"
+                    found=1
+                    break
+                  else
+                    unzip "$TMPDIR/tmp_asset" -d "$TMPDIR/extracted" || true
+                    match=$(find "$TMPDIR/extracted" -type f -iname '*unobfusc*' -o -iname '*worker*' -print -quit || true)
+                    if [ -n "$match" ]; then
+                      cp "$match" "$DEST"
+                      echo "Extracted candidate from zip: $match"
+                      found=1
+                      break
+                    fi
+                  fi
                 else
-                  echo "Could not find unobfuscated-worker.js inside release or repo." >&2
-                  exit 1
+                  # treat as direct js
+                  mv "$TMPDIR/tmp_asset" "$DEST"
+                  echo "Downloaded origin.js from $c"
+                  found=1
+                  break
                 fi
               fi
+            done
+          fi
+
+          # 4) Last fallback: clone repository and search
+          if [ $found -eq 0 ]; then
+            echo "Falling back to git clone and repository search..."
+            rm -rf bpb-src || true
+            if git clone --depth 1 "https://github.com/${REPO}.git" bpb-src; then
+              match=$(find bpb-src -type f -iname '*unobfusc*' -o -iname '*worker*' -print -quit || true)
+              if [ -n "$match" ]; then
+                echo "Found candidate file in repo: $match"
+                cp "$match" "$DEST"
+                found=1
+              else
+                echo "No candidate file found in cloned repo."
+              fi
+            else
+              echo "git clone failed"
             fi
           fi
 
           # final check
-          if [ -s origin.js ]; then
-            echo "origin.js ready, size: $(wc -c < origin.js) bytes"
+          if [ $found -eq 1 ] && [ -s "$DEST" ]; then
+            echo "origin.js ready, size: $(wc -c < "$DEST") bytes"
           else
-            echo "origin.js is empty or missing." >&2
+            echo "ERROR: origin.js not found by any method." >&2
             exit 1
           fi
 
-      - name: Obfuscate BPB worker js
+      - name: Check for origin.js changes
+        id: check_changes
         run: |
-          javascript-obfuscator origin.js --output _worker.js \
-          --compact true \
-          --control-flow-flattening true \
-          --control-flow-flattening-threshold 1 \
-          --dead-code-injection true \
-          --dead-code-injection-threshold 1 \
-          --identifier-names-generator hexadecimal \
-          --rename-globals true \
-          --string-array true \
-          --string-array-encoding 'rc4' \
-          --string-array-threshold 1 \
-          --transform-object-keys true \
-          --unicode-escape-sequence true
+          if git diff --quiet HEAD -- origin.js; then
+            echo "::set-output name=changed::false"
+            echo "origin.js unchanged, skipping obfuscation"
+          else
+            echo "::set-output name=changed::true"
+            echo "origin.js changed, running obfuscation"
+          fi
 
-      - name: Commit changes
-        uses: stefanzweifel/git-auto-commit-action@v5
+      - name: Stop if no changes
+        if: steps.check_changes.outputs.changed == 'false'
+        run: exit 0
+
+      - name: Install javascript-obfuscator
+        run: npm install -g javascript-obfuscator
+
+      - name: Obfuscate worker
+        run: |
+          mkdir -p build
+          javascript-obfuscator origin.js \
+            --output build/_worker.js \
+            --compact true \
+            --control-flow-flattening true \
+            --control-flow-flattening-threshold 0.75 \
+            --dead-code-injection true \
+            --dead-code-injection-threshold 0.4 \
+            --identifier-names-generator hexadecimal \
+            --rename-globals true \
+            --string-array true \
+            --string-array-encoding rc4 \
+            --string-array-threshold 0.75 \
+            --self-defending true \
+            --unicode-escape-sequence true
+          echo "Obfuscation complete, output: build/_worker.js"
+
+      - name: Commit and push obfuscated file
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add build/_worker.js || true
+          git commit -m "Update obfuscated worker.js [ci skip]" || echo "No changes to commit"
+          git push origin main || echo "Nothing to push"
+
+      - name: Upload obfuscated worker artifact
+        uses: actions/upload-artifact@v3
         with:
-          branch: main
-          commit_message: ':arrow_up: update latest bpb panel'
-          commit_author: 'github-actions[bot] <github-actions[bot]@users.noreply.github.com>'
-          push_options: '--set-upstream'
+          name: obfuscated-worker
+          path: build/_worker.js
