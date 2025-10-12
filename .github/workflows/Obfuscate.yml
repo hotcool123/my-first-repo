@@ -5,8 +5,8 @@ on:
     branches:
       - main
   schedule:
-        # Runs everyday at 1:00 AM
-        - cron: "0 1 * * *"
+    # Runs everyday at 1:00 AM
+    - cron: "0 1 * * *"
 
 permissions:
   contents: write
@@ -28,10 +28,65 @@ jobs:
         run: |
           npm install -g javascript-obfuscator
 
-      - name: Clone BPB workjs
+      - name: Clone BPB workjs (robust)
         run: |
-          wget -O origin.js https://raw.githubusercontent.com/bia-pain-bache/BPB-Worker-Panel/main/build/unobfuscated-worker.js
-      
+          set -euo pipefail
+
+          # 可能的 URL（优先 raw 文件路径）
+          raw_url="https://raw.githubusercontent.com/bia-pain-bache/BPB-Worker-Panel/main/build/unobfuscated-worker.js"
+          release_zip_url="https://github.com/bia-pain-bache/BPB-Worker-Panel/releases/latest/download/unobfuscated-worker.zip"
+          release_js_url="https://github.com/bia-pain-bache/BPB-Worker-Panel/releases/latest/download/unobfuscated-worker.js"
+
+          echo "Try raw URL: $raw_url"
+          if wget -O origin.js --tries=3 --timeout=30 "$raw_url"; then
+            echo "Downloaded origin.js from raw path"
+          else
+            echo "raw path failed, try release js asset..."
+            if wget -O origin.js --tries=3 --timeout=30 "$release_js_url"; then
+              echo "Downloaded origin.js from release js asset"
+            else
+              echo "release js asset not found, try release zip..."
+              if wget -O worker.zip --tries=3 --timeout=30 "$release_zip_url"; then
+                echo "Downloaded worker.zip, attempting to unzip..."
+                # 尝试解压并寻找 unobfuscated-worker.js
+                unzip -l worker.zip
+                if unzip -p worker.zip unobfuscated-worker.js > origin.js 2>/dev/null; then
+                  echo "Extracted unobfuscated-worker.js from zip to origin.js"
+                else
+                  unzip worker.zip -d worker_unzip
+                  found=$(find worker_unzip -type f -name '*unobfuscated*' -print -quit || true)
+                  if [ -n "$found" ]; then
+                    echo "Found file in zip: $found"
+                    cp "$found" origin.js
+                  else
+                    echo "Failed to find unobfuscated-worker.js inside the release zip" >&2
+                    exit 1
+                  fi
+                fi
+              else
+                echo "Release zip not found or download failed." >&2
+                echo "Attempting git clone fallback..."
+                git clone --depth 1 https://github.com/bia-pain-bache/BPB-Worker-Panel.git bpb-src || { echo "git clone failed"; exit 1; }
+                found=$(find bpb-src -type f -iname '*unobfuscated*' -print -quit || true)
+                if [ -n "$found" ]; then
+                  echo "Found file in repository at: $found"
+                  cp "$found" origin.js
+                else
+                  echo "Could not find unobfuscated-worker.js inside release or repo." >&2
+                  exit 1
+                fi
+              fi
+            fi
+          fi
+
+          # final check
+          if [ -s origin.js ]; then
+            echo "origin.js ready, size: $(wc -c < origin.js) bytes"
+          else
+            echo "origin.js is empty or missing." >&2
+            exit 1
+          fi
+
       - name: Obfuscate BPB worker js
         run: |
           javascript-obfuscator origin.js --output _worker.js \
