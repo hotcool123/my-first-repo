@@ -4,35 +4,29 @@ on:
   push:
     branches:
       - main
-  workflow_dispatch:
 
 jobs:
   build-js:
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
 
-      - name: Set up paths
+      - name: Set variables
         run: |
-          mkdir -p js_build
-          echo "JS_BUILD_DIR=js_build" >> $GITHUB_ENV
+          ORIGIN_URL="https://raw.githubusercontent.com/bia-pain-bache/BPB-Worker-Panel/main/build/unobfuscated-worker.js"
+          OUTPUT_DIR=".github/workflows"
 
-      - name: Download origin.js from GitHub
+      - name: Download origin.js
         run: |
-          ORIGIN_URL="https://raw.githubusercontent.com/hotcool123/my-first-repo/main/origin.js"
-          wget -O "$JS_BUILD_DIR/origin.js" "$ORIGIN_URL" || { echo "Failed to download origin.js"; exit 1; }
+          mkdir -p $OUTPUT_DIR
+          wget -O $OUTPUT_DIR/origin.js $ORIGIN_URL
 
-      - name: Generate _worker.js
+      - name: Create second JS file
         run: |
-          cp "$JS_BUILD_DIR/origin.js" "$JS_BUILD_DIR/_worker.js"
-          echo "// _worker.js generated from origin.js" >> "$JS_BUILD_DIR/_worker.js"
+          cp $OUTPUT_DIR/origin.js $OUTPUT_DIR/obfuscated.js
 
-      - name: List files
-        run: ls -l $JS_BUILD_DIR
-
-      - name: Upload JS artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: js-files
-          path: $JS_BUILD_DIR/*.js
+      - name: List generated files
+        run: |
+          ls -l $OUTPUT_DIR
