@@ -1,55 +1,44 @@
-name: Fetch + Obfuscate -> works.js (one-shot, safe)
+name: Build and Upload JS
 
 on:
-  workflow_dispatch:
   push:
     branches:
       - main
-
-permissions:
-  contents: write
+  workflow_dispatch:
 
 jobs:
-  fetch-and-obfuscate:
+  build-js:
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-          persist-credentials: true
+        uses: actions/checkout@v3
 
       - name: Prepare workspace
         run: |
-          mkdir -p .github/workflows
-          echo "OUTPUT_DIR=.github/workflows" >> $GITHUB_ENV
+          mkdir -p $GITHUB_WORKSPACE/.github/workflows
+          echo "OUTPUT_DIR=$GITHUB_WORKSPACE/.github/workflows" >> $GITHUB_ENV
 
-      - name: Obtain origin.js (with fallback)
+      - name: Download origin.js
         run: |
-          REPO="bia-pain-bache/BPB-Worker-Panel"
-          DEST=".github/workflows/origin.js"
-          TMPDIR="$(mktemp -d)"
-          RAW_MAIN="https://raw.githubusercontent.com/${REPO}/main/build/unobfuscated-worker.js"
+          DEST="$OUTPUT_DIR/origin.js"
+          RAW_MAIN="https://raw.githubusercontent.com/bia-pain-bache/BPB-Worker-Panel/main/build/unobfuscated-worker.js"
           echo "Trying to download $RAW_MAIN"
           if ! wget -q -O "$DEST" --tries=3 --timeout=30 "$RAW_MAIN"; then
             echo "// Placeholder origin.js" > "$DEST"
           fi
 
-      - name: Install javascript-obfuscator
-        run: npm install -g javascript-obfuscator
-
       - name: Obfuscate origin.js -> works.js
         run: |
-          javascript-obfuscator .github/workflows/origin.js \
-            --output .github/workflows/works.js \
+          npm install -g javascript-obfuscator
+          javascript-obfuscator "$OUTPUT_DIR/origin.js" \
+            --output "$OUTPUT_DIR/works.js" \
             --compact true \
             --control-flow-flattening true
 
-      - name: Upload artifacts
+      - name: Upload JS artifacts
         uses: actions/upload-artifact@v4
         with:
           name: origin-and-works
           path: |
-            .github/workflows/origin.js
-            .github/workflows/works.js
+            $OUTPUT_DIR/origin.js
+            $OUTPUT_DIR/works.js
