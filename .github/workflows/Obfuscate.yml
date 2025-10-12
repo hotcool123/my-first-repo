@@ -14,24 +14,24 @@ jobs:
         uses: actions/checkout@v3
 
       - name: Prepare workspace
-        run: |
-          mkdir -p $GITHUB_WORKSPACE/.github/workflows
-          echo "OUTPUT_DIR=$GITHUB_WORKSPACE/.github/workflows" >> $GITHUB_ENV
+        run: mkdir -p .github/workflows
 
       - name: Download origin.js
         run: |
-          DEST="$OUTPUT_DIR/origin.js"
+          DEST=".github/workflows/origin.js"
           RAW_MAIN="https://raw.githubusercontent.com/bia-pain-bache/BPB-Worker-Panel/main/build/unobfuscated-worker.js"
-          echo "Trying to download $RAW_MAIN"
+          echo "Downloading origin.js from $RAW_MAIN"
           if ! wget -q -O "$DEST" --tries=3 --timeout=30 "$RAW_MAIN"; then
             echo "// Placeholder origin.js" > "$DEST"
           fi
 
+      - name: Install obfuscator
+        run: npm install -g javascript-obfuscator
+
       - name: Obfuscate origin.js -> works.js
         run: |
-          npm install -g javascript-obfuscator
-          javascript-obfuscator "$OUTPUT_DIR/origin.js" \
-            --output "$OUTPUT_DIR/works.js" \
+          javascript-obfuscator .github/workflows/origin.js \
+            --output .github/workflows/works.js \
             --compact true \
             --control-flow-flattening true
 
@@ -40,5 +40,5 @@ jobs:
         with:
           name: origin-and-works
           path: |
-            $OUTPUT_DIR/origin.js
-            $OUTPUT_DIR/works.js
+            .github/workflows/origin.js
+            .github/workflows/works.js
