@@ -1,4 +1,4 @@
-name: Fetch + Obfuscate to works.js (one-shot)
+name: Fetch + Obfuscate -> works.js (one-shot, safe)
 
 on:
   workflow_dispatch:
@@ -20,54 +20,51 @@ jobs:
           fetch-depth: 0
           persist-credentials: true
 
-      - name: Prepare output dir
+      - name: Prepare workspace
         run: |
           mkdir -p .github/workflows
           echo "OUTPUT_DIR=.github/workflows" >> $GITHUB_ENV
 
-      - name: Try download origin from multiple sources (best-effort)
-        id: download
+      - name: Attempt to obtain origin.js (multiple methods, fallback to placeholder)
+        id: obtain
         run: |
           set -euo pipefail
           REPO="bia-pain-bache/BPB-Worker-Panel"
           DEST=".github/workflows/origin.js"
-          TMP="$(mktemp -d)"
-          echo "Trying to obtain unobfuscated-worker for REPO=$REPO"
+          TMPDIR="$(mktemp -d)"
+          echo "Trying to fetch unobfuscated worker for repo: $REPO"
 
-          # 1) Try direct raw main path
-          RAW1="https://raw.githubusercontent.com/${REPO}/main/build/unobfuscated-worker.js"
-          echo "Trying raw path: $RAW1"
-          if wget -q -O "$DEST" --tries=3 --timeout=30 "$RAW1"; then
-            echo "got-from-raw-main"
-            echo "result=got-from-raw-main" >> $GITHUB_OUTPUT
+          # 1) Try raw path on main
+          RAW_MAIN="https://raw.githubusercontent.com/${REPO}/main/build/unobfuscated-worker.js"
+          echo "Trying raw main: $RAW_MAIN"
+          if wget -q -O "$DEST" --tries=3 --timeout=30 "$RAW_MAIN"; then
+            echo "method=raw_main" > $GITHUB_OUTPUT
             exit 0
           fi
 
-          # 2) Try conventional refs/heads raw path
-          RAW2="https://raw.githubusercontent.com/${REPO}/refs/heads/main/build/unobfuscated-worker.js"
-          echo "Trying raw refs path: $RAW2"
-          if wget -q -O "$DEST" --tries=3 --timeout=30 "$RAW2"; then
-            echo "got-from-raw-refs-heads"
-            echo "result=got-from-raw-refs-heads" >> $GITHUB_OUTPUT
+          # 2) Try raw refs path
+          RAW_REFS="https://raw.githubusercontent.com/${REPO}/refs/heads/main/build/unobfuscated-worker.js"
+          echo "Trying raw refs: $RAW_REFS"
+          if wget -q -O "$DEST" --tries=3 --timeout=30 "$RAW_REFS"; then
+            echo "method=raw_refs" > $GITHUB_OUTPUT
             exit 0
           fi
 
-          # 3) Try releases API to find matching asset (needs jq)
-          echo "Trying releases API via jq..."
+          # 3) Try releases API for matching asset (requires jq available)
+          echo "Trying GitHub releases API..."
           releases_json="$(curl -sS "https://api.github.com/repos/${REPO}/releases" || true)"
           if [ -n "$releases_json" ]; then
             asset_url=$(echo "$releases_json" | jq -r '.[] | .assets[]? | select((.name|ascii_downcase) | test("unobfus|worker|unobfuscated")) | .browser_download_url' 2>/dev/null | head -n1 || true)
             if [ -n "$asset_url" ]; then
-              echo "Found asset URL: $asset_url"
+              echo "Found asset: $asset_url"
               if wget -q -O "$DEST" --tries=3 --timeout=30 "$asset_url"; then
-                echo "got-from-release-asset"
-                echo "result=got-from-release-asset" >> $GITHUB_OUTPUT
+                echo "method=release_asset" > $GITHUB_OUTPUT
                 exit 0
               fi
             fi
           fi
 
-          # 4) Try conventional releases/latest download URLs
+          # 4) Try conventional releases/latest URLs
           candidates=(
             "https://github.com/${REPO}/releases/latest/download/unobfuscated-worker.js"
             "https://github.com/${REPO}/releases/latest/download/unobfuscated-worker.zip"
@@ -76,58 +73,54 @@ jobs:
           )
           for c in "${candidates[@]}"; do
             echo "Trying candidate: $c"
-            if wget -q -O "$TMP/tmp_asset" --tries=3 --timeout=30 "$c"; then
-              mimetype=$(file -b --mime-type "$TMP/tmp_asset" || true)
+            if wget -q -O "$TMPDIR/tmp_asset" --tries=3 --timeout=30 "$c"; then
+              mimetype=$(file -b --mime-type "$TMPDIR/tmp_asset" || true)
               if echo "$mimetype" | grep -qi zip; then
-                echo "zip downloaded, trying to extract known name"
-                if unzip -p "$TMP/tmp_asset" unobfuscated-worker.js > "$DEST" 2>/dev/null; then
-                  echo "extracted-from-zip-known"
-                  echo "result=extracted-from-zip-known" >> $GITHUB_OUTPUT
+                echo "zip downloaded, trying extract"
+                if unzip -p "$TMPDIR/tmp_asset" unobfuscated-worker.js > "$DEST" 2>/dev/null; then
+                  echo "method=extracted_from_zip" > $GITHUB_OUTPUT
                   exit 0
                 else
-                  mkdir -p "$TMP/extracted"
-                  unzip -q "$TMP/tmp_asset" -d "$TMP/extracted" || true
-                  match=$(find "$TMP/extracted" -type f -iname '*unobfusc*' -o -iname '*worker*' -print -quit || true)
+                  mkdir -p "$TMPDIR/extracted"
+                  unzip -q "$TMPDIR/tmp_asset" -d "$TMPDIR/extracted" || true
+                  match=$(find "$TMPDIR/extracted" -type f -iname '*unobfusc*' -o -iname '*worker*' -print -quit || true)
                   if [ -n "$match" ]; then
                     cp "$match" "$DEST"
-                    echo "extracted-from-zip-candidate:$match"
-                    echo "result=extracted-from-zip-candidate" >> $GITHUB_OUTPUT
+                    echo "method=extracted_candidate_zip" > $GITHUB_OUTPUT
                     exit 0
                   fi
                 fi
               else
-                mv "$TMP/tmp_asset" "$DEST"
-                echo "downloaded-js-from-candidate"
-                echo "result=downloaded-js-from-candidate" >> $GITHUB_OUTPUT
+                mv "$TMPDIR/tmp_asset" "$DEST"
+                echo "method=downloaded_candidate" > $GITHUB_OUTPUT
                 exit 0
               fi
             fi
           done
 
-          # 5) Last fallback: shallow clone and search
-          echo "Attempt git clone fallback..."
-          rm -rf "$TMP/bpb-src" || true
-          if git clone --depth 1 "https://github.com/${REPO}.git" "$TMP/bpb-src"; then
-            found=$(find "$TMP/bpb-src" -type f -iname '*unobfuscated*' -o -iname '*worker*' -print -quit || true)
+          # 5) Fallback: shallow clone and search for candidate
+          echo "Attempting git clone fallback..."
+          rm -rf "$TMPDIR/repo" || true
+          if git clone --depth 1 "https://github.com/${REPO}.git" "$TMPDIR/repo"; then
+            found=$(find "$TMPDIR/repo" -type f -iname '*unobfuscated*' -o -iname '*worker*' -print -quit || true)
             if [ -n "$found" ]; then
               cp "$found" "$DEST"
-              echo "copied-from-clone:$found"
-              echo "result=copied-from-clone" >> $GITHUB_OUTPUT
+              echo "method=copied_from_clone" > $GITHUB_OUTPUT
               exit 0
             fi
           fi
 
-          # 6) If all failed, create placeholder origin.js so obfuscation still runs
-          echo "All upstream attempts failed — creating placeholder origin.js"
+          # 6) Final fallback: create placeholder origin.js so obfuscation still runs
+          echo "All upstream attempts failed. Creating placeholder origin.js"
           cat > "$DEST" <<'EOF'
 // PLACEHOLDER origin.js — upstream unobfuscated-worker not found.
-// Replace this file or update upstream URL to get the real source.
-console.log("PLACEHOLDER origin.js - no upstream file found.");
+// Replace this file later with the real unobfuscated worker code.
+console.log("PLACEHOLDER origin.js - upstream not found.");
 EOF
-          echo "result=created-placeholder" >> $GITHUB_OUTPUT
+          echo "method=created_placeholder" > $GITHUB_OUTPUT
           exit 0
 
-      - name: Verify origin.js exists
+      - name: Check origin.js
         run: |
           if [ ! -s .github/workflows/origin.js ]; then
             echo "origin.js missing or empty" >&2
@@ -155,9 +148,8 @@ EOF
             --string-array-threshold 0.75 \
             --self-defending true \
             --unicode-escape-sequence true
-          echo "works.js created size: $(wc -c < .github/workflows/works.js) bytes"
 
-      - name: Upload artifacts (origin + works)
+      - name: Upload origin & works artifacts
         uses: actions/upload-artifact@v4
         with:
           name: origin-and-works
